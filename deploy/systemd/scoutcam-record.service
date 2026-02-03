@@ -1,0 +1,23 @@
+[Unit]
+Description=ScoutCam Local Recording Service
+Documentation=https://github.com/your-org/scoutcam
+After=scoutcam-stream.service mnt-usb.mount
+Requires=scoutcam-stream.service
+BindsTo=mnt-usb.mount
+ConditionPathIsMountPoint=/mnt/usb
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/scoutcam/config.env
+ExecStartPre=/bin/mkdir -p /mnt/usb/recordings
+ExecStart=/usr/local/bin/scoutcam _record
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scoutcam-record
+
+[Install]
+WantedBy=multi-user.target

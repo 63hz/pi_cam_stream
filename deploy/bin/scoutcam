@@ -1,0 +1,349 @@
+#!/bin/bash
+# ScoutCam CLI - Control script for Pi Camera RTSP streaming
+set -euo pipefail
+
+CONFIG_FILE="/etc/scoutcam/config.env"
+PROFILES_DIR="/etc/scoutcam/profiles"
+MEDIAMTX_CONFIG="/etc/scoutcam/mediamtx.yml"
+MEDIAMTX_BIN="/usr/local/bin/mediamtx"
+
+# Load configuration
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+    else
+        echo "Error: Config file not found: $CONFIG_FILE" >&2
+        exit 1
+    fi
+}
+
+# Load profile settings
+load_profile() {
+    local profile_file="$PROFILES_DIR/${PROFILE}.env"
+    if [[ -f "$profile_file" ]]; then
+        source "$profile_file"
+    else
+        echo "Error: Profile not found: $profile_file" >&2
+        exit 1
+    fi
+}
+
+# Update mediamtx.yml with current profile settings
+apply_profile_to_mediamtx() {
+    load_config
+    load_profile
+
+    cat > "$MEDIAMTX_CONFIG" <<EOF
+# MediaMTX Configuration for ScoutCam
+# Auto-generated - do not edit manually
+# Profile: $PROFILE
+
+logLevel: info
+logDestinations: [stdout]
+
+rtsp: true
+rtspAddress: :${RTSP_PORT:-8554}
+rtspTransports: [tcp, udp]
+
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+
+paths:
+  ${STREAM_PATH:-cam}:
+    source: rpiCamera
+    rpiCameraWidth: $WIDTH
+    rpiCameraHeight: $HEIGHT
+    rpiCameraFPS: $FRAMERATE
+    rpiCameraBitrate: $BITRATE
+    rpiCameraCodec: hardwareH264
+    rpiCameraIDRPeriod: $INTRA
+    rpiCameraAWB: auto
+    rpiCameraAFMode: continuous
+EOF
+
+    echo "Applied profile $PROFILE to MediaMTX config"
+}
+
+# Show usage
+usage() {
+    cat <<EOF
+ScoutCam - Pi Camera RTSP Streaming Control
+
+Usage: scoutcam <command> [options]
+
+Commands:
+  start           Start streaming service
+  stop            Stop streaming service
+  restart         Restart streaming service
+  status          Show service status and health
+  profile <name>  Switch to profile (1080p50, 720p120, 1520p40)
+  profiles        List available profiles
+  health          Quick health check
+  logs [lines]    Show recent logs (default: 50 lines)
+  config          Show current configuration
+
+Internal commands (used by systemd):
+  _apply-profile  Apply profile to mediamtx.yml
+  _stream         Run MediaMTX streaming server
+  _record         Run the recording pipeline
+
+Examples:
+  scoutcam start
+  scoutcam profile 720p120
+  scoutcam status
+EOF
+}
+
+# Start streaming
+cmd_start() {
+    echo "Starting ScoutCam streaming service..."
+    systemctl start scoutcam-stream.service
+
+    load_config
+    if [[ "${RECORDING_ENABLED:-false}" == "true" ]]; then
+        if mountpoint -q /mnt/usb 2>/dev/null; then
+            echo "Starting recording service..."
+            systemctl start scoutcam-record.service
+        else
+            echo "Warning: USB storage not mounted, recording disabled"
+        fi
+    fi
+
+    sleep 2
+    cmd_status
+}
+
+# Stop streaming
+cmd_stop() {
+    echo "Stopping ScoutCam services..."
+    systemctl stop scoutcam-record.service 2>/dev/null || true
+    systemctl stop scoutcam-stream.service
+    echo "Services stopped"
+}
+
+# Restart streaming
+cmd_restart() {
+    echo "Restarting ScoutCam services..."
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+# Show status
+cmd_status() {
+    echo "=== ScoutCam Status ==="
+    echo ""
+
+    # Stream service status
+    echo "Stream Service:"
+    if systemctl is-active --quiet scoutcam-stream.service; then
+        echo "  Status: RUNNING"
+        local uptime=$(systemctl show scoutcam-stream.service --property=ActiveEnterTimestamp --value)
+        echo "  Started: $uptime"
+    else
+        echo "  Status: STOPPED"
+    fi
+    echo ""
+
+    # Recording service status
+    echo "Recording Service:"
+    if systemctl is-active --quiet scoutcam-record.service; then
+        echo "  Status: RUNNING"
+        if [[ -d "/mnt/usb/recordings" ]]; then
+            local count=$(find /mnt/usb/recordings -name "*.mp4" 2>/dev/null | wc -l)
+            echo "  Recordings: $count files"
+        fi
+    else
+        echo "  Status: STOPPED"
+        if ! mountpoint -q /mnt/usb 2>/dev/null; then
+            echo "  Reason: USB storage not mounted"
+        fi
+    fi
+    echo ""
+
+    # USB storage status
+    echo "USB Storage:"
+    if mountpoint -q /mnt/usb 2>/dev/null; then
+        echo "  Status: MOUNTED"
+        local usage=$(df -h /mnt/usb | tail -1 | awk '{print $5 " used (" $3 "/" $2 ")"}')
+        echo "  Usage: $usage"
+    else
+        echo "  Status: NOT MOUNTED"
+    fi
+    echo ""
+
+    # Current profile
+    load_config
+    echo "Current Profile: $PROFILE"
+    echo "RTSP URL: rtsp://$(hostname -I | awk '{print $1}'):${RTSP_PORT:-8554}/${STREAM_PATH:-cam}"
+}
+
+# Switch profile
+cmd_profile() {
+    local new_profile="${1:-}"
+
+    if [[ -z "$new_profile" ]]; then
+        echo "Error: Profile name required" >&2
+        echo "Usage: scoutcam profile <name>" >&2
+        cmd_profiles
+        return 1
+    fi
+
+    local profile_file="$PROFILES_DIR/${new_profile}.env"
+    if [[ ! -f "$profile_file" ]]; then
+        echo "Error: Profile not found: $new_profile" >&2
+        cmd_profiles
+        return 1
+    fi
+
+    echo "Switching to profile: $new_profile"
+
+    # Update config file
+    sed -i "s/^PROFILE=.*/PROFILE=$new_profile/" "$CONFIG_FILE"
+
+    # Restart if running
+    if systemctl is-active --quiet scoutcam-stream.service; then
+        echo "Restarting streaming service..."
+        cmd_restart
+    else
+        echo "Profile updated. Start service with: scoutcam start"
+    fi
+}
+
+# List profiles
+cmd_profiles() {
+    echo "Available profiles:"
+    for f in "$PROFILES_DIR"/*.env; do
+        local name=$(basename "$f" .env)
+        local desc=$(head -2 "$f" | tail -1 | sed 's/^# //')
+        echo "  $name - $desc"
+    done
+}
+
+# Health check
+cmd_health() {
+    local ok=true
+
+    # Check stream service
+    if ! systemctl is-active --quiet scoutcam-stream.service; then
+        echo "FAIL: Stream service not running"
+        ok=false
+    fi
+
+    # Check RTSP endpoint
+    load_config
+    if ! ss -tln | grep -q ":${RTSP_PORT:-8554}"; then
+        echo "FAIL: RTSP port not listening"
+        ok=false
+    fi
+
+    # Check camera
+    if ! rpicam-hello --list-cameras 2>&1 | grep -q "imx477"; then
+        echo "WARN: IMX477 camera not detected"
+    fi
+
+    if $ok; then
+        echo "OK: All systems healthy"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Show logs
+cmd_logs() {
+    local lines="${1:-50}"
+    journalctl -u scoutcam-stream.service -u scoutcam-record.service -n "$lines" --no-pager
+}
+
+# Show config
+cmd_config() {
+    echo "=== Current Configuration ==="
+    echo ""
+    echo "Main config ($CONFIG_FILE):"
+    cat "$CONFIG_FILE"
+    echo ""
+    load_config
+    echo "Active profile ($PROFILES_DIR/${PROFILE}.env):"
+    cat "$PROFILES_DIR/${PROFILE}.env"
+    echo ""
+    echo "MediaMTX config ($MEDIAMTX_CONFIG):"
+    cat "$MEDIAMTX_CONFIG"
+}
+
+# Internal: Apply profile to mediamtx config
+_apply_profile() {
+    apply_profile_to_mediamtx
+}
+
+# Internal: Run MediaMTX streaming server
+_stream() {
+    # Apply current profile settings to mediamtx.yml
+    apply_profile_to_mediamtx
+
+    load_config
+    echo "Starting MediaMTX RTSP server on port ${RTSP_PORT:-8554}"
+    echo "Stream will be available at: rtsp://$(hostname -I | awk '{print $1}'):${RTSP_PORT:-8554}/${STREAM_PATH:-cam}"
+
+    # Run MediaMTX (blocks until stopped)
+    exec $MEDIAMTX_BIN "$MEDIAMTX_CONFIG"
+}
+
+# Internal: Run recording pipeline
+_record() {
+    load_config
+
+    local rtsp_url="rtsp://localhost:${RTSP_PORT:-8554}/${STREAM_PATH:-cam}"
+    local output_dir="${RECORDING_PATH:-/mnt/usb/recordings}"
+    local segment_time="${SEGMENT_DURATION:-300}"
+
+    mkdir -p "$output_dir"
+
+    echo "Recording from $rtsp_url to $output_dir"
+    echo "Segment duration: ${segment_time}s"
+
+    # Use timestamp-based filenames
+    ffmpeg -hide_banner -loglevel warning \
+        -rtsp_transport tcp \
+        -i "$rtsp_url" \
+        -c copy \
+        -f segment \
+        -segment_time "$segment_time" \
+        -segment_format mp4 \
+        -reset_timestamps 1 \
+        -strftime 1 \
+        "$output_dir/cam_%Y%m%d_%H%M%S.mp4"
+}
+
+# Main command dispatcher
+main() {
+    local cmd="${1:-}"
+    shift || true
+
+    case "$cmd" in
+        start)      cmd_start "$@" ;;
+        stop)       cmd_stop "$@" ;;
+        restart)    cmd_restart "$@" ;;
+        status)     cmd_status "$@" ;;
+        profile)    cmd_profile "$@" ;;
+        profiles)   cmd_profiles "$@" ;;
+        health)     cmd_health "$@" ;;
+        logs)       cmd_logs "$@" ;;
+        config)     cmd_config "$@" ;;
+        _apply-profile) _apply_profile "$@" ;;
+        _stream)    _stream "$@" ;;
+        _record)    _record "$@" ;;
+        -h|--help|help|"")
+            usage
+            ;;
+        *)
+            echo "Unknown command: $cmd" >&2
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

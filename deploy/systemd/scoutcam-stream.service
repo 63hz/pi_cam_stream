@@ -1,0 +1,20 @@
+[Unit]
+Description=ScoutCam RTSP Streaming Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/scoutcam _stream
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scoutcam-stream
+
+# Resource priority
+Nice=-10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=ScoutCam USB Storage Mount
+Documentation=https://github.com/your-org/scoutcam
+
+[Mount]
+What=/dev/disk/by-label/SCOUTCAM
+Where=/mnt/usb
+Type=ext4
+Options=defaults,noatime,nofail
+
+[Install]
+WantedBy=multi-user.target

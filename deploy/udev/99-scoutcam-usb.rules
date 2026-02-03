@@ -1,0 +1,8 @@
+# ScoutCam USB Storage Auto-Mount Rule
+# Triggers systemd mount when USB drive labeled "SCOUTCAM" is connected
+
+# When SCOUTCAM labeled drive is added, start the mount
+ACTION=="add", ENV{ID_FS_LABEL}=="SCOUTCAM", TAG+="systemd", ENV{SYSTEMD_WANTS}+="mnt-usb.mount"
+
+# When drive is removed, recording service will stop due to BindsTo dependency
+ACTION=="remove", ENV{ID_FS_LABEL}=="SCOUTCAM", RUN+="/bin/systemctl stop scoutcam-record.service"
