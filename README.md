@@ -119,7 +119,7 @@ journalctl -u scoutcam-stream -f
 
 **Camera not detected:**
 ```bash
-libcamera-hello --list-cameras
+rpicam-hello --list-cameras
 ```
 
 **Can't connect from Windows:**
@@ -127,13 +127,31 @@ libcamera-hello --list-cameras
 - Check firewall allows port 8554
 - Test: `ping scoutcam.local`
 
+**VLC shows 404 or "no stream available":**
+Check if all processes are running:
+```bash
+ps aux | grep -E 'rpicam|ffmpeg|mediamtx'
+```
+You should see 3 processes: mediamtx, rpicam-vid, and ffmpeg. If only mediamtx is running, the pipeline failed - check logs with `journalctl -u scoutcam-stream -n 100`.
+
+**"encoder_create(): unable to activate output stream" errors:**
+This is MediaMTX's built-in rpiCamera failing. Our setup bypasses this by using rpicam-vid + ffmpeg instead. If you see this error, the config is wrong - ensure `/etc/scoutcam/mediamtx.yml` has `source: publisher` (not `source: rpiCamera`), then restart: `scoutcam restart`
+
+**VLC uses wrong RTSP dialect:**
+If VLC logs show "only real/helix rtsp servers supported", force TCP transport:
+```cmd
+vlc rtsp://192.168.0.232:8554/cam --rtsp-tcp
+```
+
 ## Architecture
 
 ```
-[Pi HQ Camera] → [libcamera-vid] → [ffmpeg] → [MediaMTX] → [RTSP]
-                      H.264                       ↓
-                                           [Local Recording]
+[Pi HQ Camera] → [rpicam-vid] → pipe → [ffmpeg] → RTSP publish → [MediaMTX] → [Clients]
+                   H.264 encode           wrap for RTSP            RTSP server
 ```
+
+**Why this architecture?**
+MediaMTX has a built-in `rpiCamera` source that *should* work directly, but it fails on Pi 4B with IMX477 with "encoder_create(): unable to activate output stream". The rpicam-vid + ffmpeg pipeline bypasses MediaMTX's encoder entirely - rpicam-vid does the H.264 encoding via the Pi's hardware encoder, ffmpeg wraps the stream for RTSP, and MediaMTX just acts as a simple RTSP server in "publisher" mode.
 
 ## File Structure
 

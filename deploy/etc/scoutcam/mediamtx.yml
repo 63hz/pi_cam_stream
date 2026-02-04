@@ -1,5 +1,5 @@
 # MediaMTX Configuration for ScoutCam
-# Uses built-in Raspberry Pi camera support
+# Uses publisher mode - rpicam-vid + ffmpeg publishes to this server
 
 # Logging
 logLevel: info
@@ -16,21 +16,7 @@ hls: false
 webrtc: false
 srt: false
 
-# Path configuration - uses Pi camera directly
+# Path configuration - accepts stream from rpicam-vid + ffmpeg
 paths:
   cam:
-    source: rpiCamera
-
-    # Video settings (overridden by scoutcam profile loading)
-    rpiCameraWidth: 2028
-    rpiCameraHeight: 1080
-    rpiCameraFPS: 50
-    rpiCameraBitrate: 8000000
-
-    # Codec settings
-    rpiCameraCodec: hardwareH264
-    rpiCameraIDRPeriod: 25
-
-    # Camera tuning (defaults to auto)
-    rpiCameraAWB: auto
-    rpiCameraAFMode: continuous
+    source: publisher

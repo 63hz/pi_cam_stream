@@ -29,6 +29,7 @@ load_profile() {
 }
 
 # Update mediamtx.yml with current profile settings
+# Uses publisher mode - rpicam-vid + ffmpeg will publish the stream
 apply_profile_to_mediamtx() {
     load_config
     load_profile
@@ -37,6 +38,7 @@ apply_profile_to_mediamtx() {
 # MediaMTX Configuration for ScoutCam
 # Auto-generated - do not edit manually
 # Profile: $PROFILE
+# Mode: publisher (rpicam-vid + ffmpeg pipeline)
 
 logLevel: info
 logDestinations: [stdout]
@@ -52,15 +54,7 @@ srt: false
 
 paths:
   ${STREAM_PATH:-cam}:
-    source: rpiCamera
-    rpiCameraWidth: $WIDTH
-    rpiCameraHeight: $HEIGHT
-    rpiCameraFPS: $FRAMERATE
-    rpiCameraBitrate: $BITRATE
-    rpiCameraCodec: hardwareH264
-    rpiCameraIDRPeriod: $INTRA
-    rpiCameraAWB: auto
-    rpiCameraAFMode: continuous
+    source: publisher
 EOF
 
     echo "Applied profile $PROFILE to MediaMTX config"
@@ -278,17 +272,77 @@ _apply_profile() {
     apply_profile_to_mediamtx
 }
 
-# Internal: Run MediaMTX streaming server
+# Internal: Run MediaMTX streaming server with rpicam-vid + ffmpeg pipeline
 _stream() {
     # Apply current profile settings to mediamtx.yml
     apply_profile_to_mediamtx
 
     load_config
-    echo "Starting MediaMTX RTSP server on port ${RTSP_PORT:-8554}"
-    echo "Stream will be available at: rtsp://$(hostname -I | awk '{print $1}'):${RTSP_PORT:-8554}/${STREAM_PATH:-cam}"
+    load_profile
 
-    # Run MediaMTX (blocks until stopped)
-    exec $MEDIAMTX_BIN "$MEDIAMTX_CONFIG"
+    local rtsp_port="${RTSP_PORT:-8554}"
+    local stream_path="${STREAM_PATH:-cam}"
+    local rtsp_url="rtsp://localhost:${rtsp_port}/${stream_path}"
+
+    echo "Starting MediaMTX RTSP server on port ${rtsp_port}"
+    echo "Stream will be available at: rtsp://$(hostname -I | awk '{print $1}'):${rtsp_port}/${stream_path}"
+
+    # Start MediaMTX in background
+    $MEDIAMTX_BIN "$MEDIAMTX_CONFIG" &
+    MEDIAMTX_PID=$!
+
+    # Cleanup on exit
+    cleanup() {
+        echo "Stopping streaming pipeline..."
+        kill $FFMPEG_PID 2>/dev/null || true
+        kill $MEDIAMTX_PID 2>/dev/null || true
+        wait
+    }
+    trap cleanup EXIT INT TERM
+
+    # Wait for MediaMTX to be ready
+    echo "Waiting for MediaMTX to start..."
+    for i in $(seq 1 30); do
+        if ss -tln | grep -q ":${rtsp_port}"; then
+            echo "MediaMTX is ready"
+            break
+        fi
+        sleep 0.5
+    done
+
+    if ! ss -tln | grep -q ":${rtsp_port}"; then
+        echo "Error: MediaMTX failed to start" >&2
+        exit 1
+    fi
+
+    echo "Starting rpicam-vid + ffmpeg pipeline..."
+    echo "  Resolution: ${WIDTH}x${HEIGHT} @ ${FRAMERATE}fps"
+    echo "  Bitrate: ${BITRATE}"
+    echo "  IDR Period: ${INTRA}"
+
+    # Run rpicam-vid piped to ffmpeg
+    # rpicam-vid outputs raw H.264 NAL units, ffmpeg wraps them for RTSP
+    rpicam-vid -t 0 \
+        --width "$WIDTH" \
+        --height "$HEIGHT" \
+        --framerate "$FRAMERATE" \
+        --codec h264 \
+        --profile high \
+        --level 4.2 \
+        --bitrate "$BITRATE" \
+        --intra "$INTRA" \
+        -o - 2>/dev/null | \
+    ffmpeg -hide_banner -loglevel warning \
+        -f h264 -i - \
+        -c copy \
+        -f rtsp "$rtsp_url" &
+    FFMPEG_PID=$!
+
+    echo "Streaming pipeline started (rpicam-vid PID: $$, ffmpeg PID: $FFMPEG_PID)"
+
+    # Wait for either process to exit
+    wait $FFMPEG_PID || true
+    wait $MEDIAMTX_PID || true
 }
 
 # Internal: Run recording pipeline
