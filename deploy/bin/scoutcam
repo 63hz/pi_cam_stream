@@ -333,6 +333,7 @@ _stream() {
         --intra "$INTRA" \
         -o - 2>/dev/null | \
     ffmpeg -hide_banner -loglevel warning \
+        -probesize 10M -analyzeduration 2M \
         -f h264 -i - \
         -c copy \
         -f rtsp "$rtsp_url" &

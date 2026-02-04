@@ -47,9 +47,10 @@ ffplay -fflags nobuffer rtsp://scoutcam.local:8554/cam
 
 | Profile | Resolution | FPS | Bitrate | Use Case |
 |---------|-----------|-----|---------|----------|
-| 1080p50 | 1920x1080 | 50 | 8 Mbps | Detail (robot ID) |
-| 720p120 | 1280x720 | 120 | 6 Mbps | Fast motion |
-| 720p60 | 1280x720 | 60 | 4 Mbps | Balanced |
+| 1080p50 | 2028x1080 | 50 | 8 Mbps | Default, wide HD |
+| 1080p40 | 2028x1080 | 40 | 10 Mbps | Low-light (longer exposure) |
+| 720p120 | 1280x720 | 120 | 6 Mbps | Fast motion tracking |
+| 720p60 | 1280x720 | 60 | 4 Mbps | Balanced, lower bandwidth |
 
 Switch profile:
 ```bash
