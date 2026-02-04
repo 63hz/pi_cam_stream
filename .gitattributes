@@ -1,0 +1,10 @@
+# Ensure shell scripts use LF line endings (required for Linux/Pi)
+*.sh text eol=lf
+deploy/bin/* text eol=lf
+
+# Keep Windows batch files with CRLF
+*.bat text eol=crlf
+
+# YAML can use either, but LF is safer for Linux
+*.yml text eol=lf
+*.yaml text eol=lf
