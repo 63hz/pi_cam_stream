@@ -331,12 +331,15 @@ _stream() {
         --level 4.2 \
         --bitrate "$BITRATE" \
         --intra "$INTRA" \
+        --inline \
         -o - 2>/dev/null | \
     ffmpeg -hide_banner -loglevel warning \
+        -fflags +genpts \
+        -r "$FRAMERATE" \
         -probesize 10M -analyzeduration 2M \
         -f h264 -i - \
         -c copy \
-        -f rtsp "$rtsp_url" &
+        -f rtsp -rtsp_transport tcp "$rtsp_url" &
     FFMPEG_PID=$!
 
     echo "Streaming pipeline started (rpicam-vid PID: $$, ffmpeg PID: $FFMPEG_PID)"

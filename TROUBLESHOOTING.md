@@ -131,8 +131,12 @@ VLC is using the wrong RTSP module. Force TCP:
 vlc rtsp://192.168.0.232:8554/cam --rtsp-tcp
 ```
 
-### ffmpeg "Timestamps are unset" Warning
-This is just a warning, not an error. The stream still works.
+### H.264 Decode Errors ("error while decoding MB", "concealing errors")
+If you see decode errors when playing or capturing the stream, the pipeline may be missing critical flags. The correct pipeline includes:
+- `--inline` on rpicam-vid: Repeats SPS/PPS headers with every keyframe for decoder recovery
+- `-fflags +genpts` on ffmpeg: Generates proper timestamps for raw H.264
+- `-r $FRAMERATE` on ffmpeg input: Ensures correct timestamp intervals
+- `-rtsp_transport tcp` on ffmpeg output: Reliable delivery to MediaMTX
 
 ---
 
@@ -175,12 +179,16 @@ scoutcam config
 ## The Pipeline Explained
 
 ```
-rpicam-vid -t 0 --width W --height H --framerate F --codec h264 ... -o - |
-ffmpeg -f h264 -i - -c copy -f rtsp rtsp://localhost:8554/cam
+rpicam-vid -t 0 --width W --height H --framerate F --codec h264 --inline ... -o - |
+ffmpeg -fflags +genpts -r F -f h264 -i - -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/cam
 ```
 
 1. **rpicam-vid**: Captures from camera, encodes to H.264 using Pi's hardware encoder, outputs to stdout
+   - `--inline`: Repeats SPS/PPS headers with every keyframe (critical for decoder recovery after any glitch)
 2. **ffmpeg**: Reads H.264 stream, wraps it in RTSP, publishes to MediaMTX
+   - `-fflags +genpts`: Generates proper PTS/DTS timestamps for raw H.264 input
+   - `-r F`: Tells ffmpeg the input frame rate for correct timestamp intervals
+   - `-rtsp_transport tcp`: Ensures reliable delivery to MediaMTX (no packet loss)
 3. **MediaMTX**: Simple RTSP server in "publisher" mode - just relays the stream to clients
 
 This bypasses MediaMTX's broken rpiCamera implementation entirely.
