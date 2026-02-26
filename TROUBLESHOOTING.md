@@ -1,142 +1,158 @@
 # ScoutCam Troubleshooting & Recovery Guide
 
-## The Big Gotcha: MediaMTX rpiCamera vs rpicam-vid
+## Architecture Overview
 
-**TL;DR:** MediaMTX's built-in `rpiCamera` source does NOT work reliably with Pi 4B + IMX477. We use `rpicam-vid` + `ffmpeg` instead.
-
-### Symptoms of the Wrong Setup
-- VLC connects but gets 404 error
-- MediaMTX logs show: `encoder_create(): unable to activate output stream`
-- `ps aux | grep mediamtx` shows mediamtx running, but no rpicam-vid or ffmpeg
-
-### Symptoms of the Correct Setup
-- Three processes running: mediamtx, rpicam-vid, ffmpeg
-- MediaMTX logs show: `[path cam] stream is available and online, 1 track (H264)`
-- VLC connects and shows video
-
-### How to Verify
-```bash
-# Check processes - you need all 3
-ps aux | grep -E 'rpicam|ffmpeg|mediamtx' | grep -v grep
-
-# Check MediaMTX config - must say "source: publisher"
-grep "source:" /etc/scoutcam/mediamtx.yml
-
-# Check logs for success message
-journalctl -u scoutcam-stream -n 20 | grep "stream is available"
+The current pipeline uses MediaMTX's built-in `rpiCamera` source:
+```
+[IMX477 Camera] -> [MediaMTX rpiCamera] -> RTSP -> [PC OpenCV]
+                   (single process)
 ```
 
-### How to Fix
-```bash
-# 1. Stop the service
-sudo systemctl stop scoutcam-stream
+You should see **one process** (`mediamtx`) and no rpicam-vid or ffmpeg for streaming.
 
-# 2. Verify config has publisher mode (not rpiCamera)
-cat /etc/scoutcam/mediamtx.yml | grep source
-# Should show: source: publisher
-
-# 3. If it shows "source: rpiCamera", fix it:
-sudo sed -i 's/source: rpiCamera/source: publisher/' /etc/scoutcam/mediamtx.yml
-
-# 4. Restart
-sudo systemctl restart scoutcam-stream
-
-# 5. Verify all 3 processes are running
-sleep 3 && ps aux | grep -E 'rpicam|ffmpeg|mediamtx' | grep -v grep
-```
-
----
-
-## Fresh Install / Recovery
-
-### From Scratch on a New Pi
-
-1. **Flash Pi OS Lite 64-bit** to SD card
-   - Use Raspberry Pi Imager
-   - Set hostname: `scoutcam`
-   - Enable SSH
-   - Configure WiFi if needed
-
-2. **Copy files from Windows:**
-   ```powershell
-   scp -r deploy/* pi@scoutcam.local:~/scoutcam-setup/
-   ```
-
-3. **Run installer on Pi:**
-   ```bash
-   ssh pi@scoutcam.local
-   cd ~/scoutcam-setup
-   chmod +x install.sh
-   sudo ./install.sh
-   ```
-
-4. **Start streaming:**
-   ```bash
-   scoutcam start
-   ```
-
-5. **Test from Windows:**
-   ```cmd
-   vlc rtsp://scoutcam.local:8554/cam --rtsp-tcp
-   ```
-
-### Recovering a Broken Pi
-
-If streaming stops working:
+## Quick Health Check
 
 ```bash
-# Full reset
-scoutcam stop
-sudo systemctl restart scoutcam-stream
-sleep 3
+# On the Pi:
 scoutcam status
+scoutcam health
+
+# Is MediaMTX running?
+ps aux | grep mediamtx | grep -v grep
+
+# Is RTSP port listening?
+ss -tln | grep 8554
+
+# Recent logs
+journalctl -u scoutcam-stream -n 30 --no-pager
 ```
 
-If that doesn't work:
-```bash
-# Re-deploy from Windows
-scp -r deploy/* pi@scoutcam:~/scoutcam-setup/
-ssh pi@scoutcam "cd ~/scoutcam-setup && sudo ./install.sh && scoutcam restart"
+From the PC:
+```powershell
+# Probe actual delivery FPS
+python receiver/rtsp_ingest_debug.py --probe
+
+# Quick stream test
+ffplay -fflags nobuffer rtsp://scoutcam.local:8554/cam
 ```
 
 ---
 
 ## Common Issues
 
-### "No stream is available on path 'cam'"
-The rpicam-vid + ffmpeg pipeline isn't running. Check:
+### "encoder_create(): unable to activate output stream"
+
+**Cause:** The profile requests a resolution/fps combo above the V4L2 hardware encoder's limit.
+
+**Pi 4B encoder limits:**
+- 1920x1080 @ 30fps max
+- 1280x720 @ 60fps max
+
+**Fix:** Switch to a supported profile:
 ```bash
-ps aux | grep rpicam    # Should show rpicam-vid process
-ps aux | grep ffmpeg    # Should show ffmpeg process
+scoutcam profile 720p60     # 1280x720 @ 60fps
+scoutcam profile 1080p30    # 1920x1080 @ 30fps
 ```
 
-If missing, check the full logs:
-```bash
-journalctl -u scoutcam-stream -n 100
+The legacy profiles (1080p50, 720p120, 1080p40) exceed these limits and will fail with `rpiCamera` source.
+
+### Stream starts but FPS is low
+
+Run the probe from your PC:
+```powershell
+python receiver/rtsp_ingest_debug.py --probe
 ```
 
-### Camera Device Busy
-If you see "Failed to queue buffer" errors, another process has the camera:
+Look at `speed=` in the output:
+- `speed >= 0.95x` = Pi is delivering in real-time, PC can keep up
+- `speed < 0.8x` = Pi can't deliver fast enough (encoder bottleneck)
+
+If the Pi is slow, check:
 ```bash
-# Kill any stray camera processes
+# Is the profile too aggressive?
+scoutcam config
+
+# CPU usage
+top -bn1 | head -15
+
+# Direct encoder throughput test (bypass network)
+rpicam-vid -t 10000 --width 1280 --height 720 --framerate 60 --codec h264 --profile high --level 4.2 --bitrate 6000000 --intra 30 --inline -o /dev/null -v 2>&1 | grep -E "displayed|dropped"
+```
+
+### Camera not detected
+
+```bash
+rpicam-hello --list-cameras
+```
+
+Should show:
+```
+0 : imx477 [4056x3040 12-bit RGGB] (/base/soc/i2c0mux/i2c@1/imx477@1a)
+```
+
+If not:
+- Check camera ribbon cable is seated properly
+- Check `dtoverlay=imx477` in `/boot/firmware/config.txt`
+- Reboot
+
+### Camera device busy
+
+```bash
+sudo pkill -9 mediamtx
 sudo pkill -9 rpicam
 sudo pkill -9 libcamera
-# Restart
-scoutcam restart
+sleep 2
+sudo systemctl restart scoutcam-stream.service
 ```
 
-### VLC "only real/helix rtsp servers supported"
-VLC is using the wrong RTSP module. Force TCP:
+### Can't connect from Windows
+
+```powershell
+# Can you reach the Pi?
+ping scoutcam.local
+
+# If mDNS doesn't work, find the Pi's IP:
+# On the Pi: hostname -I
+# Then use the IP directly:
+ffplay -fflags nobuffer rtsp://192.168.x.x:8554/cam
+```
+
+Check firewall allows port 8554 on both Pi and PC.
+
+### VLC shows errors
+
+Force TCP transport:
 ```cmd
-vlc rtsp://192.168.0.232:8554/cam --rtsp-tcp
+vlc rtsp://scoutcam.local:8554/cam --rtsp-tcp
 ```
 
-### H.264 Decode Errors ("error while decoding MB", "concealing errors")
-If you see decode errors when playing or capturing the stream, the pipeline may be missing critical flags. The correct pipeline includes:
-- `--inline` on rpicam-vid: Repeats SPS/PPS headers with every keyframe for decoder recovery
-- `-fflags +genpts` on ffmpeg: Generates proper timestamps for raw H.264
-- `-r $FRAMERATE` on ffmpeg input: Ensures correct timestamp intervals
-- `-rtsp_transport tcp` on ffmpeg output: Reliable delivery to MediaMTX
+### OpenCV ThreadedCapture crashes (pthread_frame.c assertion)
+
+This happens if `cv2.VideoCapture` is created in one thread and `read()` is called from another. The `ThreadedCapture` class in `rtsp_ingest_debug.py` avoids this by creating the capture inside the reader thread. If you see this error, make sure you're using the latest version of the script.
+
+---
+
+## Fresh Install / Recovery
+
+### From Scratch
+
+1. Flash Pi OS Lite 64-bit, set hostname `scoutcam`, enable SSH
+2. From PowerShell:
+   ```powershell
+   scp -r deploy/* pi@scoutcam.local:~/scoutcam-setup/
+   ssh pi@scoutcam.local "cd ~/scoutcam-setup && chmod +x install.sh && sudo ./install.sh"
+   ```
+3. Start:
+   ```bash
+   scoutcam start
+   ```
+
+### Re-deploy from repo
+
+```powershell
+scp -o IdentityFile=~/.ssh/id_ed25519 deploy/bin/scoutcam pi@scoutcam.local:/tmp/scoutcam_new
+ssh -o IdentityFile=~/.ssh/id_ed25519 pi@scoutcam.local "sudo cp /tmp/scoutcam_new /usr/local/bin/scoutcam && sudo chmod +x /usr/local/bin/scoutcam && sudo systemctl restart scoutcam-stream.service"
+```
 
 ---
 
@@ -145,50 +161,13 @@ If you see decode errors when playing or capturing the stream, the pipeline may 
 | File | Purpose |
 |------|---------|
 | `/usr/local/bin/scoutcam` | Main CLI script |
-| `/etc/scoutcam/mediamtx.yml` | MediaMTX config - **must have `source: publisher`** |
+| `/etc/scoutcam/mediamtx.yml` | MediaMTX config (auto-generated, `source: rpiCamera`) |
 | `/etc/scoutcam/config.env` | Main settings (profile, port, etc) |
 | `/etc/scoutcam/profiles/*.env` | Resolution/framerate profiles |
 | `/etc/systemd/system/scoutcam-stream.service` | Systemd service |
 
 ---
 
-## Quick Diagnostic Commands
+## Diagnostic Commands Reference
 
-```bash
-# Is the service running?
-systemctl is-active scoutcam-stream
-
-# What processes are running?
-ps aux | grep -E 'rpicam|ffmpeg|mediamtx' | grep -v grep
-
-# Recent logs
-journalctl -u scoutcam-stream -n 50 --no-pager
-
-# Is RTSP port open?
-ss -tln | grep 8554
-
-# Is camera detected?
-rpicam-hello --list-cameras
-
-# Current config
-scoutcam config
-```
-
----
-
-## The Pipeline Explained
-
-```
-rpicam-vid -t 0 --width W --height H --framerate F --codec h264 --inline ... -o - |
-ffmpeg -fflags +genpts -r F -f h264 -i - -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/cam
-```
-
-1. **rpicam-vid**: Captures from camera, encodes to H.264 using Pi's hardware encoder, outputs to stdout
-   - `--inline`: Repeats SPS/PPS headers with every keyframe (critical for decoder recovery after any glitch)
-2. **ffmpeg**: Reads H.264 stream, wraps it in RTSP, publishes to MediaMTX
-   - `-fflags +genpts`: Generates proper PTS/DTS timestamps for raw H.264 input
-   - `-r F`: Tells ffmpeg the input frame rate for correct timestamp intervals
-   - `-rtsp_transport tcp`: Ensures reliable delivery to MediaMTX (no packet loss)
-3. **MediaMTX**: Simple RTSP server in "publisher" mode - just relays the stream to clients
-
-This bypasses MediaMTX's broken rpiCamera implementation entirely.
+See [TOOLBOX.md](TOOLBOX.md) for a complete copy-paste-ready command reference.
