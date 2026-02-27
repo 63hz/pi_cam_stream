@@ -152,4 +152,27 @@ else
 fi
 
 echo ""
+echo "--- Hostname Check ---"
+CURRENT_HOSTNAME=$(hostname)
+if [[ "$CURRENT_HOSTNAME" == "raspberrypi" ]]; then
+    echo "WARNING: Hostname is still 'raspberrypi'."
+    echo "Each Pi MUST have a unique hostname for multi-camera setups."
+    echo ""
+    echo "  sudo hostnamectl set-hostname scoutcam-blue"
+    echo "  sudo reboot"
+    echo ""
+    echo "Naming convention: scoutcam-blue, scoutcam-red, scoutcam-green"
+elif [[ ! "$CURRENT_HOSTNAME" =~ ^scoutcam ]]; then
+    echo "NOTE: Hostname is '$CURRENT_HOSTNAME'."
+    echo "For multi-camera setups, consider using the naming convention:"
+    echo "  scoutcam-blue, scoutcam-red, scoutcam-green"
+    echo ""
+    echo "  sudo hostnamectl set-hostname scoutcam-blue && sudo reboot"
+else
+    echo "OK: Hostname is '$CURRENT_HOSTNAME'"
+fi
+echo ""
+echo "Stream URL:"
+echo "  rtsp://${CURRENT_HOSTNAME}.local:8554/cam"
+echo ""
 echo "Ready! Run 'scoutcam start' to begin streaming."
