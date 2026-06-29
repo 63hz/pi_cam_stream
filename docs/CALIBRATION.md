@@ -21,10 +21,11 @@ Zero extra dependencies — just the `opencv-python` + `numpy` you already use.
 ## Quick start
 
 ```bat
-REM 1. Print a checkerboard (default 9x6 inner corners, 25 mm squares)
+REM 1. Print a checkerboard (default 9x6 inner corners)
 calibrate.bat make-board
-REM   -> receiver/calibration/checkerboard.png. PRINT AT 100% (no "fit to page"),
-REM      then mount it on something rigid and FLAT (foam board, clipboard).
+REM   -> receiver/calibration/checkerboard.png. Print SCALED TO FIT the page
+REM      (landscape uses Letter/A4 better); keep the whole board + white border
+REM      un-clipped, then mount it on something rigid and FLAT (foam board, clipboard).
 
 REM 2. Capture ~20 views from a camera (live window with guidance)
 calibrate.bat capture --camera blue
@@ -42,6 +43,12 @@ calibrate.bat list
 ```
 
 (`python calibrate_camera.py <cmd>` works too if you prefer.)
+
+> **Board size doesn't matter for undistortion.** Intrinsics (K + distortion) are
+> independent of the physical square size, so just fit the board to the page —
+> don't clip it. The square size only sets *metric* scale (extrinsic translation);
+> if you need that later, measure one printed square and pass `--square <mm>`. What
+> *does* matter: the board is flat/rigid, fully in frame, and detected.
 
 ## Capturing good views
 

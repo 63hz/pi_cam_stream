@@ -124,16 +124,19 @@ def cmd_make_board(args):
                 y0, x0 = margin + r * sq, margin + c * sq
                 img[y0 : y0 + sq, x0 : x0 + sq] = 0
     caption = (
-        f"{board.cols}x{board.rows} inner corners | {board.square_size_mm:g}mm squares "
-        f"| PRINT AT 100% then measure a square and pass --square <mm> if it differs"
+        f"{board.cols}x{board.rows} inner corners | scale to FIT THE PAGE, keep the white border "
+        f"un-clipped | size does not affect undistortion; measure & pass --square <mm> for metric"
     )
     cv2.putText(img, caption, (margin, H - cap_h // 2),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, 0, 1, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, 0, 1, cv2.LINE_AA)
     out = args.out or os.path.join(calib.CALIB_DIR, "checkerboard.png")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     cv2.imwrite(out, img)
-    print(f"Wrote {out}  ({board.cols}x{board.rows} inner corners, {board.square_size_mm:g}mm)")
-    print("Print at 100% scale (no 'fit to page'), mount on something rigid and flat.")
+    print(f"Wrote {out}  ({board.cols}x{board.rows} inner corners)")
+    print("Print SCALED TO FIT the page - keep the whole board + white border un-clipped")
+    print("(landscape uses Letter/A4 better). Mount it FLAT and rigid; flatness matters most.")
+    print("Square size does NOT affect undistortion. Only if you later need metric/extrinsic")
+    print("scale: measure one printed square with a ruler and pass --square <mm> to calibrate.")
 
 
 # --------------------------------------------------------------------------
