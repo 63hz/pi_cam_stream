@@ -16,6 +16,10 @@ Examples:
   python multicam_viewer.py --no-discover --hosts scoutcam-blue.local
   # Dual-camera Pi 5 (two streams from one host):
   python multicam_viewer.py --no-discover --hosts 10.0.0.13 --paths /cam0 /cam1
+  # Mixed fleet, explicit labeled feeds (any resolutions/framerates in one grid):
+  python multicam_viewer.py --no-discover --urls \
+      blue=rtsp://10.0.0.11:8554/cam red=rtsp://10.0.0.12:8554/cam \
+      pi5-cam0=rtsp://10.0.0.13:8554/cam0 pi5-cam1=rtsp://10.0.0.13:8554/cam1
 """
 
 import argparse
@@ -26,6 +30,7 @@ import sys
 import threading
 import time
 from collections import deque
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -153,11 +158,12 @@ class CameraFeed:
 
     RECONNECT_INTERVAL = 3.0  # seconds between reconnect attempts
 
-    def __init__(self, hostname, port=8554, path="/cam", transport="tcp"):
+    def __init__(self, hostname, port=8554, path="/cam", transport="tcp", label=None):
         self.hostname = hostname
         self.port = port
         self.path = path
         self.transport = transport
+        self.label = label
         self.rtsp_url = f"rtsp://{hostname}:{port}{path}"
 
         self._lock = threading.Lock()
@@ -180,7 +186,9 @@ class CameraFeed:
 
     @property
     def display_name(self):
-        """Short name for overlay (strip .local; append path for dual-cam hosts)."""
+        """Short name for overlay (explicit label, else host + path for dual-cam)."""
+        if self.label:
+            return self.label
         name = self.hostname
         if name.endswith(".local"):
             name = name[:-6]
@@ -423,14 +431,19 @@ class MultiCamViewer:
                 self.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
             )
 
+        # Explicit feed URLs (mixed hosts/paths/resolutions/framerates) come first
+        if self.args.urls:
+            for spec in self.args.urls:
+                self._add_feed_url(spec)
+
         # Start with explicit hosts (one feed per host x path)
         if self.args.hosts:
             for host in self.args.hosts:
                 for path in self.args.paths:
                     self._add_feed(host, path)
 
-        # Start auto-discovery
-        if not self.args.no_discover:
+        # Start auto-discovery (skipped when explicit --urls were given)
+        if not self.args.no_discover and not self.args.urls:
             self.discovery = CameraDiscovery()
             self.discovery.start()
 
@@ -479,6 +492,36 @@ class MultiCamViewer:
             port=self.args.port,
             path=path,
             transport=self.args.transport,
+        )
+        feed.start()
+        self.feeds[key] = feed
+
+    def _add_feed_url(self, spec):
+        """Add a feed from an explicit URL spec: '[label=]rtsp://host:port/path'.
+
+        Lets one window mix cameras from different Pis with different paths,
+        resolutions, and framerates (each tile captures at its own native rate).
+        """
+        label = None
+        if "=" in spec and "://" in spec and spec.index("=") < spec.index("://"):
+            label, spec = spec.split("=", 1)
+        parsed = urlparse(spec)
+        host = parsed.hostname
+        if not host:
+            print(f"[viewer] Skipping invalid feed URL: {spec}")
+            return
+        port = parsed.port or self.args.port
+        path = parsed.path or "/cam"
+        key = f"{host}:{port}{path}"
+        if key in self.feeds:
+            return
+        print(f"[viewer] Adding feed: {label + ' -> ' if label else ''}{spec}")
+        feed = CameraFeed(
+            host,
+            port=port,
+            path=path,
+            transport=self.args.transport,
+            label=label,
         )
         feed.start()
         self.feeds[key] = feed
@@ -643,6 +686,15 @@ def main():
         "Overrides --path; each host gets one feed per path.",
     )
     parser.add_argument(
+        "--urls",
+        nargs="+",
+        default=None,
+        help="Explicit feed URLs, optionally labeled, e.g. "
+        "blue=rtsp://10.0.0.11:8554/cam pi5-0=rtsp://10.0.0.13:8554/cam0 . "
+        "Mixes any hosts/paths/resolutions/framerates in one window; "
+        "disables --hosts/--paths and auto-discovery.",
+    )
+    parser.add_argument(
         "--width", type=int, default=1280, help="Window width (default: 1280)"
     )
     parser.add_argument(
@@ -663,20 +715,21 @@ def main():
     # Normalize paths: --paths (dual-cam) overrides --path (single-cam default)
     args.paths = args.paths or [args.path]
 
-    if not args.hosts and args.no_discover:
-        print("ERROR: --no-discover requires --hosts to specify at least one camera.")
+    if not args.hosts and not args.urls and args.no_discover:
+        print("ERROR: --no-discover requires --hosts or --urls to specify cameras.")
         return 1
 
     print("=" * 60)
     print("  ScoutCam Multi-Camera Viewer")
     print("=" * 60)
-    if args.hosts:
-        print(f"  Hosts: {', '.join(args.hosts)}")
-    if not args.no_discover:
-        print("  Auto-discovery: enabled")
+    if args.urls:
+        print(f"  Feeds ({len(args.urls)}): {', '.join(args.urls)}")
+        print("  Auto-discovery: disabled (explicit --urls)")
     else:
-        print("  Auto-discovery: disabled")
-    print(f"  RTSP: port={args.port} paths={' '.join(args.paths)} transport={args.transport}")
+        if args.hosts:
+            print(f"  Hosts: {', '.join(args.hosts)}")
+        print(f"  Auto-discovery: {'disabled' if args.no_discover else 'enabled'}")
+        print(f"  RTSP: port={args.port} paths={' '.join(args.paths)} transport={args.transport}")
     print()
 
     viewer = MultiCamViewer(args)
