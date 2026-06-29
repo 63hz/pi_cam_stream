@@ -1,0 +1,10 @@
+{
+  "_comment": "ScoutCam camera fleet. Add a camera by appending an entry here; the calibration tool and viewers look cameras up by name. 'wide' lenses (IMX708 wide) distort strongly -> calibrate with --rational or --fisheye. Calibration is resolution-specific, so 'profile' is a reminder of the stream's current resolution.",
+  "board": { "cols": 9, "rows": 6, "square_size_mm": 25.0 },
+  "cameras": [
+    { "name": "blue",     "url": "rtsp://10.0.0.11:8554/cam",  "sensor": "imx477", "lens": "hq",        "profile": "1080p30" },
+    { "name": "red",      "url": "rtsp://10.0.0.12:8554/cam",  "sensor": "imx477", "lens": "hq",        "profile": "1080p30" },
+    { "name": "pi5-cam0", "url": "rtsp://10.0.0.13:8554/cam0", "sensor": "imx708", "lens": "wide-noir", "profile": "720p60" },
+    { "name": "pi5-cam1", "url": "rtsp://10.0.0.13:8554/cam1", "sensor": "imx708", "lens": "wide-noir", "profile": "720p60" }
+  ]
+}
