@@ -14,6 +14,8 @@ Examples:
   python multicam_viewer.py --hosts scoutcam-blue.local        # specific camera
   python multicam_viewer.py --hosts scoutcam-blue.local scoutcam-red.local
   python multicam_viewer.py --no-discover --hosts scoutcam-blue.local
+  # Dual-camera Pi 5 (two streams from one host):
+  python multicam_viewer.py --no-discover --hosts 10.0.0.13 --paths /cam0 /cam1
 """
 
 import argparse
@@ -178,10 +180,13 @@ class CameraFeed:
 
     @property
     def display_name(self):
-        """Short name for overlay (strip .local suffix)."""
+        """Short name for overlay (strip .local; append path for dual-cam hosts)."""
         name = self.hostname
         if name.endswith(".local"):
             name = name[:-6]
+        p = self.path.lstrip("/")
+        if p and p != "cam":
+            name = f"{name}/{p}"
         return name
 
     def start(self):
@@ -418,10 +423,11 @@ class MultiCamViewer:
                 self.WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
             )
 
-        # Start with explicit hosts
+        # Start with explicit hosts (one feed per host x path)
         if self.args.hosts:
             for host in self.args.hosts:
-                self._add_feed(host)
+                for path in self.args.paths:
+                    self._add_feed(host, path)
 
         # Start auto-discovery
         if not self.args.no_discover:
@@ -437,8 +443,9 @@ class MultiCamViewer:
                 # Check for newly discovered cameras
                 if self.discovery is not None:
                     for host in self.discovery.get_hosts():
-                        if host not in self.feeds:
-                            self._add_feed(host)
+                        for path in self.args.paths:
+                            if self._feed_key(host, path) not in self.feeds:
+                                self._add_feed(host, path)
 
                 # Render the grid
                 canvas = self._render_grid()
@@ -456,19 +463,25 @@ class MultiCamViewer:
         finally:
             self._cleanup()
 
-    def _add_feed(self, hostname):
-        """Add a new camera feed."""
-        if hostname in self.feeds:
+    @staticmethod
+    def _feed_key(hostname, path):
+        """Unique key per feed so two paths on the same host don't collide."""
+        return f"{hostname}{path}"
+
+    def _add_feed(self, hostname, path):
+        """Add a new camera feed for a given host + RTSP path."""
+        key = self._feed_key(hostname, path)
+        if key in self.feeds:
             return
-        print(f"[viewer] Adding feed: {hostname}")
+        print(f"[viewer] Adding feed: {hostname}{path}")
         feed = CameraFeed(
             hostname,
             port=self.args.port,
-            path=self.args.path,
+            path=path,
             transport=self.args.transport,
         )
         feed.start()
-        self.feeds[hostname] = feed
+        self.feeds[key] = feed
 
     def _render_grid(self):
         """Render all feeds into a single canvas."""
@@ -620,7 +633,14 @@ def main():
         "--port", type=int, default=8554, help="RTSP port (default: 8554)"
     )
     parser.add_argument(
-        "--path", default="/cam", help="RTSP path (default: /cam)"
+        "--path", default="/cam", help="RTSP path for single-camera hosts (default: /cam)"
+    )
+    parser.add_argument(
+        "--paths",
+        nargs="+",
+        default=None,
+        help="Multiple RTSP paths per host for dual-camera Pis, e.g. /cam0 /cam1. "
+        "Overrides --path; each host gets one feed per path.",
     )
     parser.add_argument(
         "--width", type=int, default=1280, help="Window width (default: 1280)"
@@ -640,6 +660,9 @@ def main():
 
     args = parser.parse_args()
 
+    # Normalize paths: --paths (dual-cam) overrides --path (single-cam default)
+    args.paths = args.paths or [args.path]
+
     if not args.hosts and args.no_discover:
         print("ERROR: --no-discover requires --hosts to specify at least one camera.")
         return 1
@@ -653,7 +676,7 @@ def main():
         print("  Auto-discovery: enabled")
     else:
         print("  Auto-discovery: disabled")
-    print(f"  RTSP: port={args.port} path={args.path} transport={args.transport}")
+    print(f"  RTSP: port={args.port} paths={' '.join(args.paths)} transport={args.transport}")
     print()
 
     viewer = MultiCamViewer(args)

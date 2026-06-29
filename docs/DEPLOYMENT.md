@@ -133,10 +133,34 @@ mDNS (`.local`) still works alongside static IPs — avahi-daemon handles both.
 
 | Hostname | Static IP | Color | Use Case |
 |----------|-----------|-------|----------|
-| `scoutcam-blue` | `10.0.0.11` | Blue | Primary / blue alliance |
-| `scoutcam-red` | `10.0.0.12` | Red | Red alliance |
-| `scoutcam-green` | `10.0.0.13` | Green | Third camera / spare |
+| `scoutcam-blue` | `10.0.0.11` | Blue | Primary / blue alliance (Pi 4B, 1 cam) |
+| `scoutcam-red` | `10.0.0.12` | Red | Red alliance (Pi 4B, 1 cam) |
+| `scoutcam-pi5` | `10.0.0.13` | — | Pi 5 dual camera: two IMX708 on `/cam0` + `/cam1` |
 | Laptop | `10.0.0.1` | — | Viewer |
+
+> **Pi 5 dual-camera node (`10.0.0.13`):** one MediaMTX instance serves two paths,
+> `rtsp://10.0.0.13:8554/cam0` and `/cam1`, selected via `rpiCameraCamID` 0/1. The Pi 5
+> has **no hardware H.264 encoder**, so both streams are software-encoded (`rpiCameraCodec:
+> auto` → OpenH264) — set `CAMERA_COUNT=2` in `config.env` and view with
+> `view_dual.bat 10.0.0.13` (or `multicam_viewer.py --hosts 10.0.0.13 --paths /cam0 /cam1`).
+> Verified on Raspberry Pi OS (Debian 13 trixie, aarch64), MediaMTX v1.16.0, login user `mfg`.
+
+### Pi 5 dual-camera throughput (measured)
+
+Two IMX708 Camera Module 3 streaming simultaneously, delivered fps measured at the PC,
+CPU = total across the Pi 5's 4 cores. Fixed 6 ms shutter (so exposure never caps fps):
+
+| Profile (per camera) | Delivered fps (cam0 / cam1) | Pi 5 CPU | Temp | Verdict |
+|----------------------|------------------------------|----------|------|---------|
+| 720p30  | 28 / 28 | 28% | 50 °C | trivial |
+| **720p60** (default) | **57 / 57** | **42%** | 54 °C | **recommended for tracking** |
+| 1080p30 | 30 / 30 | 49% | 55 °C | comfortable, max detail |
+| 1080p50 | 50 / 50 | 79% | 59 °C | works, near the CPU limit |
+| 1080p60 | 27 / 51 | 64% | 59 °C | unstable — one camera starves; avoid |
+
+The encoder, not the camera, is the only ceiling: the IMX708 raw-captures 30/60/120 fps
+fine, and software OpenH264 leaves >50% CPU idle through 1080p30. The camera index→MIPI
+port mapping was stable across a reboot (`cam0`→`i2c@88000`, `cam1`→`i2c@80000`).
 
 ## Quick-Clone Checklist (5 minutes per Pi)
 

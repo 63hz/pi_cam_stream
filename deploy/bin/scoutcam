@@ -28,8 +28,36 @@ load_profile() {
     fi
 }
 
-# Update mediamtx.yml with current profile settings
-# Uses rpiCamera source - MediaMTX talks directly to the camera via libcamera
+# Emit one MediaMTX rpiCamera path block to stdout.
+# Args: $1 = path name (e.g. cam0), $2 = rpiCameraCameraID (libcamera index, 0 or 1)
+# Reuses width/height/fps/idr/bitrate locals from the caller (bash dynamic scope).
+emit_camera_path() {
+    local path_name="$1"
+    local cam_id="$2"
+    cat <<EOF
+  ${path_name}:
+    source: rpiCamera
+    rpiCameraCamID: ${cam_id}
+    rpiCameraCodec: ${RPI_CAMERA_CODEC:-auto}
+    rpiCameraWidth: $width
+    rpiCameraHeight: $height
+    rpiCameraFPS: $fps
+    rpiCameraIDRPeriod: $idr
+    rpiCameraBitrate: $bitrate
+EOF
+    if [[ -n "${RPI_CAMERA_AF_MODE:-}" ]]; then
+        echo "    rpiCameraAfMode: ${RPI_CAMERA_AF_MODE}"
+    fi
+    if [[ -n "${SHUTTER_SPEED:-}" ]]; then
+        echo "    rpiCameraShutter: ${SHUTTER_SPEED}"
+    fi
+}
+
+# Update mediamtx.yml with current profile settings.
+# Uses rpiCamera source - MediaMTX talks directly to the camera(s) via libcamera.
+#   CAMERA_COUNT=1  -> single path (STREAM_PATH; Pi 4B / HQ Cam, backward compatible)
+#   CAMERA_COUNT>=2 -> two paths (STREAM_PATH0/STREAM_PATH1; Pi 5 dual IMX708)
+# rpiCameraCodec: auto = hardware H.264 on Pi 4B, software H.264 on Pi 5 (no HW encoder).
 apply_profile_to_mediamtx() {
     load_config
     load_profile
@@ -41,6 +69,7 @@ apply_profile_to_mediamtx() {
     local bitrate="${BITRATE:-6000000}"
     local idr="${IDR_PERIOD:-${INTRA:-30}}"
 
+    # Global server section
     cat > "$MEDIAMTX_CONFIG" <<EOF
 # MediaMTX Configuration for ScoutCam
 # Auto-generated - do not edit manually
@@ -60,21 +89,18 @@ webrtc: false
 srt: false
 
 paths:
-  ${STREAM_PATH:-cam}:
-    source: rpiCamera
-    rpiCameraWidth: $width
-    rpiCameraHeight: $height
-    rpiCameraFPS: $fps
-    rpiCameraIDRPeriod: $idr
-    rpiCameraBitrate: $bitrate
 EOF
 
-    if [[ -n "${SHUTTER_SPEED:-}" ]]; then
-        # Append shutter speed if configured
-        echo "    rpiCameraShutter: ${SHUTTER_SPEED}" >> "$MEDIAMTX_CONFIG"
+    # Camera path(s)
+    local count="${CAMERA_COUNT:-1}"
+    if [[ "$count" -ge 2 ]]; then
+        emit_camera_path "${STREAM_PATH0:-cam0}" "${CAMERA0_ID:-0}" >> "$MEDIAMTX_CONFIG"
+        emit_camera_path "${STREAM_PATH1:-cam1}" "${CAMERA1_ID:-1}" >> "$MEDIAMTX_CONFIG"
+        echo "Applied profile $PROFILE to MediaMTX config (dual rpiCamera: ${STREAM_PATH0:-cam0}, ${STREAM_PATH1:-cam1})"
+    else
+        emit_camera_path "${STREAM_PATH:-cam}" "${CAMERA0_ID:-0}" >> "$MEDIAMTX_CONFIG"
+        echo "Applied profile $PROFILE to MediaMTX config (rpiCamera source)"
     fi
-
-    echo "Applied profile $PROFILE to MediaMTX config (rpiCamera source)"
 }
 
 # Show usage
@@ -188,7 +214,14 @@ cmd_status() {
     # Current profile
     load_config
     echo "Current Profile: $PROFILE"
-    echo "RTSP URL: rtsp://$(hostname -I | awk '{print $1}'):${RTSP_PORT:-8554}/${STREAM_PATH:-cam}"
+    local ip; ip=$(hostname -I | awk '{print $1}')
+    if [[ "${CAMERA_COUNT:-1}" -ge 2 ]]; then
+        echo "RTSP URLs:"
+        echo "  rtsp://$ip:${RTSP_PORT:-8554}/${STREAM_PATH0:-cam0}"
+        echo "  rtsp://$ip:${RTSP_PORT:-8554}/${STREAM_PATH1:-cam1}"
+    else
+        echo "RTSP URL: rtsp://$ip:${RTSP_PORT:-8554}/${STREAM_PATH:-cam}"
+    fi
 }
 
 # Switch profile
@@ -250,9 +283,12 @@ cmd_health() {
         ok=false
     fi
 
-    # Check camera
-    if ! rpicam-hello --list-cameras 2>&1 | grep -q "imx477"; then
-        echo "WARN: IMX477 camera not detected"
+    # Check camera(s) - IMX708 (Camera Module 3 / Pi 5) or IMX477 (HQ Cam / Pi 4B)
+    local expected="${CAMERA_COUNT:-1}"
+    local detected
+    detected=$(rpicam-hello --list-cameras 2>&1 | grep -cE 'imx708|imx477' || true)
+    if [[ "$detected" -lt "$expected" ]]; then
+        echo "WARN: expected $expected camera(s), detected $detected (imx708/imx477)"
     fi
 
     if $ok; then
@@ -298,13 +334,20 @@ _stream() {
     load_profile
 
     local rtsp_port="${RTSP_PORT:-8554}"
-    local stream_path="${STREAM_PATH:-cam}"
+    local ip; ip=$(hostname -I | awk '{print $1}')
 
     echo "Starting MediaMTX RTSP server (rpiCamera source)"
     echo "  Profile: $PROFILE"
     echo "  Resolution: ${WIDTH}x${HEIGHT} @ ${FRAMERATE}fps"
     echo "  Bitrate: ${BITRATE}"
-    echo "  Stream URL: rtsp://$(hostname -I | awk '{print $1}'):${rtsp_port}/${stream_path}"
+    echo "  Codec: ${RPI_CAMERA_CODEC:-auto}"
+    if [[ "${CAMERA_COUNT:-1}" -ge 2 ]]; then
+        echo "  Cameras: 2 (software H.264 on Pi 5)"
+        echo "  Stream URLs: rtsp://$ip:${rtsp_port}/${STREAM_PATH0:-cam0}"
+        echo "               rtsp://$ip:${rtsp_port}/${STREAM_PATH1:-cam1}"
+    else
+        echo "  Stream URL: rtsp://$ip:${rtsp_port}/${STREAM_PATH:-cam}"
+    fi
 
     # MediaMTX handles everything: camera -> encode -> RTSP
     # No separate rpicam-vid or ffmpeg needed

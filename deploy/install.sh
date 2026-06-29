@@ -142,13 +142,15 @@ echo ""
 echo "Then plug it in - recording will start automatically."
 echo ""
 
-# Check camera
-echo "Checking camera..."
-if rpicam-hello --list-cameras 2>&1 | grep -q "imx477"; then
-    echo "OK: Pi HQ Camera (IMX477) detected"
+# Check camera(s) - IMX708 (Camera Module 3 / Pi 5) or IMX477 (HQ Cam / Pi 4B)
+echo "Checking camera(s)..."
+CAM_DETECTED=$(rpicam-hello --list-cameras 2>&1 | grep -cE 'imx708|imx477' || true)
+if [[ "$CAM_DETECTED" -ge 1 ]]; then
+    echo "OK: $CAM_DETECTED camera(s) detected (imx708/imx477)"
+    echo "    For a dual-camera Pi 5, expect 2 and set CAMERA_COUNT=2 in config.env"
 else
-    echo "WARNING: Pi HQ Camera (IMX477) not detected"
-    echo "Make sure the camera is connected and the ribbon cable is seated properly"
+    echo "WARNING: no Pi camera (imx708/imx477) detected"
+    echo "Make sure the camera(s) are connected and the ribbon cables are seated properly"
 fi
 
 echo ""

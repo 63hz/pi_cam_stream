@@ -1,0 +1,6 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local test recordings
+recording_*.mp4
