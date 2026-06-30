@@ -10,10 +10,13 @@ traffic patterns and high/low-usage areas.
     the "floor usage" map.
 
 Anchor point (the tracked "position") - see --anchor:
-  hips  (default) : midpoint of the two hips. Stable, smooth, always on the body.
+  chest (default) : center of the upper torso (just below the shoulder line).
+                    Stable, high-confidence, and well clear of the waistline.
+  shoulders       : midpoint of the two shoulders (base of the neck).
   feet            : midpoint of the two ankles -> falls back to box bottom-center.
                     This is the FLOOR-CONTACT point; use it when projecting onto a
                     floor plan (it's where the person actually stands).
+  hips            : midpoint of the two hips (true body centroid, but low).
   bbox            : bottom-center of the bounding box (robust floor proxy).
 
   python pose_tracks.py                          # default: pi5-cam0
@@ -54,13 +57,26 @@ def anchor_point(mode, xy, conf, box, kp_thr):
 
     def mid(a, b):
         if conf[a] >= kp_thr and conf[b] >= kp_thr:
-            return ((xy[a][0] + xy[b][0]) / 2.0, (xy[a][1] + xy[b][1]) / 2.0)
+            return np.array([(xy[a][0] + xy[b][0]) / 2.0, (xy[a][1] + xy[b][1]) / 2.0])
         return None
 
+    shoulders = mid(5, 6)
+    hips = mid(11, 12)
+
+    if mode == "chest":
+        # center of upper torso: shoulders, nudged ~1/3 toward hips (the sternum).
+        if shoulders is not None and hips is not None:
+            return tuple(shoulders + 0.33 * (hips - shoulders))
+        if shoulders is not None:
+            return tuple(shoulders)
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    if mode == "shoulders":
+        return tuple(shoulders) if shoulders is not None else ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
     if mode == "hips":
-        return mid(11, 12) or ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+        return tuple(hips) if hips is not None else ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
     if mode == "feet":
-        return mid(15, 16) or ((x1 + x2) / 2.0, y2)
+        feet = mid(15, 16)
+        return tuple(feet) if feet is not None else ((x1 + x2) / 2.0, y2)
     return ((x1 + x2) / 2.0, y2)  # bbox bottom-center
 
 
@@ -93,8 +109,9 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.4, help="detection confidence")
     ap.add_argument("--kp-conf", type=float, default=0.5, help="min keypoint confidence to draw")
-    ap.add_argument("--anchor", default="hips", choices=["hips", "feet", "bbox"],
-                    help="tracked position point (default hips; feet/bbox = floor contact)")
+    ap.add_argument("--anchor", default="chest",
+                    choices=["chest", "shoulders", "hips", "feet", "bbox"],
+                    help="tracked position point (default chest; feet/bbox = floor contact)")
     ap.add_argument("--trail-seconds", type=float, default=6.0, help="trail fade time")
     ap.add_argument("--tracker", default="bytetrack.yaml")
     ap.add_argument("--transport", default="tcp", choices=["tcp", "udp"])
