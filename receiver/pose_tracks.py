@@ -90,15 +90,18 @@ def draw_skeleton(img, xy, conf, color, kp_thr):
             cv2.circle(img, (int(xy[i][0]), int(xy[i][1])), 3, color, -1, cv2.LINE_AA)
 
 
-def heatmap_overlay(display, heat):
-    if heat.max() <= 0:
-        return display
-    hn = np.log1p(heat)
-    hn = (hn / hn.max() * 255).astype(np.uint8)
-    cm = cv2.applyColorMap(hn, cv2.COLORMAP_TURBO)
-    mask = (hn > 12)[..., None]
-    blended = cv2.addWeighted(display, 0.35, cm, 0.65, 0)
-    return np.where(mask, blended, display)
+def colorize_heat(heat):
+    """Colorized, additive-friendly heat layer (low-res, uint8).
+
+    Intensity-scaled so unused areas are ~black (add nothing) and hot areas glow;
+    this lets the composite be a single fast cv2.add instead of a masked blend.
+    """
+    mx = float(np.log1p(heat).max())
+    if mx <= 0:
+        return np.zeros((*heat.shape, 3), np.uint8)
+    norm = np.log1p(heat) / mx
+    cm = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
+    return (cm * norm[..., None]).astype(np.uint8)
 
 
 def main():
@@ -113,6 +116,10 @@ def main():
                     choices=["chest", "shoulders", "hips", "feet", "bbox"],
                     help="tracked position point (default chest; feet/bbox = floor contact)")
     ap.add_argument("--trail-seconds", type=float, default=6.0, help="trail fade time")
+    ap.add_argument("--overlay-scale", type=float, default=0.5,
+                    help="resolution scale for the trail/heatmap layers (lower = faster)")
+    ap.add_argument("--heat-refresh", type=int, default=5,
+                    help="recolorize heatmap every N frames (accumulation stays per-frame)")
     ap.add_argument("--tracker", default="bytetrack.yaml")
     ap.add_argument("--transport", default="tcp", choices=["tcp", "udp"])
     ap.add_argument("--device", default="cuda")
@@ -139,9 +146,12 @@ def main():
     cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 
     tau = max(0.1, args.trail_seconds / 3.0)   # fade so a point is ~5% after trail_seconds
-    trail = None
-    heat = None
-    prev = {}                  # id -> (x, y) last anchor
+    trail = None               # low-res uint8 trail layer
+    heat = None                # low-res float32 accumulator
+    heat_vis = None            # cached colorized heat (recomputed every --heat-refresh)
+    ow = oh = heat_r = 0
+    sx = sy = 1.0
+    prev = {}                  # id -> (x, y) last anchor in OVERLAY coords
     seen = {}                  # id -> last loop index (for pruning prev)
     show_heat, show_trails, show_boxes = False, True, False
     fps_t = deque(maxlen=30)
@@ -164,10 +174,14 @@ def main():
 
             H, W = frame.shape[:2]
             if trail is None:
-                trail = np.zeros((H, W, 3), np.float32)
-                heat = np.zeros((H, W), np.float32)
+                ow, oh = max(1, int(W * args.overlay_scale)), max(1, int(H * args.overlay_scale))
+                sx, sy = ow / W, oh / H
+                trail = np.zeros((oh, ow, 3), np.uint8)
+                heat = np.zeros((oh, ow), np.float32)
+                heat_r = max(3, int(16 * args.overlay_scale))
             if show_trails:
-                trail *= math.exp(-dt / tau)
+                # SIMD exponential fade on a small uint8 layer (releases the GIL)
+                trail = cv2.convertScaleAbs(trail, alpha=math.exp(-dt / tau))
 
             res = model.track(frame, persist=True, tracker=args.tracker, imgsz=args.imgsz,
                               conf=args.conf, device=device, verbose=False)[0]
@@ -185,25 +199,28 @@ def main():
                     ax, ay = int(ax), int(ay)
                     people.append((tid, color, kxy[i], kconf[i], boxes[i], (ax, ay)))
                     seen[tid] = loop
-                    # trail segment + heat accumulation at the anchor
-                    if 0 <= ax < W and 0 <= ay < H:
+                    # trail + heat are drawn in the low-res overlay space
+                    oax, oay = int(ax * sx), int(ay * sy)
+                    if 0 <= oax < ow and 0 <= oay < oh:
                         if tid in prev:
-                            cv2.line(trail, prev[tid], (ax, ay),
-                                     (float(color[0]), float(color[1]), float(color[2])), 3, cv2.LINE_AA)
-                        prev[tid] = (ax, ay)
-                        cv2.circle(heat, (ax, ay), 16, 1.0, -1)
+                            cv2.line(trail, prev[tid], (oax, oay), color, 2, cv2.LINE_AA)
+                        prev[tid] = (oax, oay)
+                        cv2.circle(heat, (oax, oay), heat_r, 1.0, -1)
 
             # prune stale prev entries (left the frame a while ago)
             for tid in [t for t, l in seen.items() if loop - l > 60]:
                 prev.pop(tid, None)
                 seen.pop(tid, None)
 
-            # compose: frame -> trails (additive) -> heatmap -> skeletons -> HUD
-            display = frame.copy()
+            # compose: frame -> trails (additive) -> heatmap -> skeletons -> HUD.
+            # Overlays are upscaled from the small layer and added with one SIMD op each.
+            display = frame
             if show_trails:
-                display = cv2.add(display, np.clip(trail, 0, 255).astype(np.uint8))
+                display = cv2.add(display, cv2.resize(trail, (W, H), interpolation=cv2.INTER_LINEAR))
             if show_heat:
-                display = heatmap_overlay(display, heat)
+                if heat_vis is None or loop % max(1, args.heat_refresh) == 0:
+                    heat_vis = colorize_heat(heat)
+                display = cv2.add(display, cv2.resize(heat_vis, (W, H), interpolation=cv2.INTER_LINEAR))
             for tid, color, xy, conf, box, (ax, ay) in people:
                 if show_boxes:
                     x1, y1, x2, y2 = box.astype(int)
@@ -231,7 +248,7 @@ def main():
             elif key == ord("b"):
                 show_boxes = not show_boxes
             elif key == ord("c"):
-                trail[:] = 0; heat[:] = 0; prev.clear()
+                trail[:] = 0; heat[:] = 0; heat_vis = None; prev.clear()
                 print("cleared trails + heatmap")
             elif key == ord("s"):
                 p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tracks_snapshot.png")
