@@ -10,3 +10,9 @@ recording_*.mp4
 receiver/calibration/captures/
 receiver/calibration/checkerboard.png
 receiver/calibration/*_verify.png
+
+# ML model weights (auto-downloaded on first run) and demo snapshots
+*.pt
+*.pth
+*.onnx
+receiver/pose_snapshot.png
