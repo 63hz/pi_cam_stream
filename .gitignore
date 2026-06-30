@@ -15,4 +15,4 @@ receiver/calibration/*_verify.png
 *.pt
 *.pth
 *.onnx
-receiver/pose_snapshot.png
+receiver/*_snapshot.png

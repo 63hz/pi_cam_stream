@@ -320,7 +320,8 @@ def main():
     yolo_worker.start()
 
     win = "Pose: RF-DETR (left) vs YOLO26 (right)  -  q quit, s snapshot"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    # KEEPRATIO letterboxes the wide canvas instead of stretching it (no warp).
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     print("Running. Aim the camera at a person. q quit, s snapshot.")
     try:
         while True:
