@@ -448,7 +448,7 @@ def _parse_frame_count(stderr_output: str):
 # ---------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="RTSP ingest debug harness (OpenCV).")
-    parser.add_argument("--pi", default="scoutcam.local", help="Pi hostname/IP (default: scoutcam.local)")
+    parser.add_argument("--pi", default="scoutcam-blue", help="Pi hostname/IP (default: scoutcam.local)")
     parser.add_argument("--path", default="/cam", help="RTSP path (default: /cam)")
     parser.add_argument("--port", type=int, default=8554, help="RTSP port (default: 8554)")
     parser.add_argument("--buffersize", type=int, default=1, help="CAP_PROP_BUFFERSIZE to request (default: 1)")

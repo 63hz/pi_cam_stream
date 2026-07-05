@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(xargs grep -l \"rpiCamera\")",
+      "Read(//c/Users/clay.hansen/.ssh/**)"
     ]
   }
 }
